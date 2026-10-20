@@ -836,8 +836,10 @@ let get_predeclared_def defn n i =
     | exception _ -> None
   else None
 
-type predeclared_ind_kind = Eq | Nat | Nat_le | Or | And | Fin | UInt32 | Char
-type predeclared_def_kind = UInt32_size | Nat_isValidChar
+type predeclared_ind_kind = Eq | Nat | Nat_le | Or | And | Fin | UInt32 | BitVec | Char
+type predeclared_def_kind =
+  | UInt32_size | Add | Mult | Pow | Pred | Sub | Nat_isValidChar | UInt32_toNat
+  | UInt32_isValidChar
 type predeclared_ind_as_def_kind = ULift_cumul
 
 let get_predeclared_cnames (k : predeclared_ind_kind) n =
@@ -848,7 +850,8 @@ let get_predeclared_cnames (k : predeclared_ind_kind) n =
   | Or -> [ N.append n "inl"; N.append n "inr" ]
   | And -> [ N.append n "intro" ]
   | Fin -> [ N.append n "mk" ]
-  | UInt32 -> [ N.append n "mk" ]
+  | UInt32 -> [ N.append n "ofBitVec" ]
+  | BitVec -> [ N.append n "ofFin" ]
   | Char -> [ N.append n "mk" ]
 
 let get_predeclared_ind_any n i =
@@ -863,6 +866,7 @@ let get_predeclared_ind_any n i =
       (And, [ "And" ]);
       (Fin, [ "Fin" ]);
       (UInt32, [ "UInt32" ]);
+      (BitVec, [ "BitVec" ]);
       (Char, [ "Char" ]);
     ]
 
@@ -896,7 +900,14 @@ let get_predeclared_def_any n i =
       get_predeclared_def defh n i |> Option.map (fun x -> (defk, defh, x)))
     [
       (UInt32_size, [ "UInt32"; "size" ]);
+      (Add, [ "Nat"; "add" ]);
+      (Mult, [ "Nat"; "mul" ]);
+      (Pow, [ "Nat"; "pow" ]);
+      (Pred, [ "Nat"; "pred" ]);
+      (Sub, [ "Nat"; "sub" ]);
       (Nat_isValidChar, [ "Nat"; "isValidChar" ]);
+      (UInt32_toNat, [ "UInt32"; "toNat" ]);
+      (UInt32_isValidChar, [ "UInt32"; "isValidChar" ]);
     ]
 
 let get_predeclared_def_some n i =
@@ -1105,7 +1116,7 @@ let mk_list list uinst ty l =
   in
   mk_list_rec l
 
-let mk_string char string list char_uinst mkChar s =
+let mk_string char string_of_chars list char_uinst mkChar s =
   let codepoints =
     try check_valid_codepoints (string_to_codepoints s)
     with Failure msg as exn ->
@@ -1114,7 +1125,7 @@ let mk_string char string list char_uinst mkChar s =
   in
   let chars = List.map (mk_char mkChar) codepoints in
   let ls = mk_list list char_uinst char chars in
-  Constr.(mkApp (mkConstructU ((string, 1), UVars.Instance.empty), [| ls |]))
+  Constr.mkApp (string_of_chars, [| ls |])
 
 (* [c] has type [indu] applied to [args] *)
 let unfold_proj_case env evd ~field ~indu ~mib ~mip ~args c =
@@ -1310,10 +1321,16 @@ and to_constr_node =
     | String s ->
       (* instantiate (N.append N.anon "Char") [] >>= fun char -> *)
       (* let (_, charu) = Constr.destInd char in *)
-      instantiate (N.append N.anon "String") [] >>= fun string ->
-      let string, _ = Constr.destInd string in
-      instantiate (N.append (N.append N.anon "String") "mk") []
-      >>= fun string_mk ->
+      instantiate (N.append N.anon "String") [] >>= fun _ ->
+      (* recent Lean has no String.mk: build strings with String.ofList *)
+      let string_mk = N.append_list N.anon [ "String"; "mk" ] in
+      let string_of_list = N.append_list N.anon [ "String"; "ofList" ] in
+      let string_of_chars =
+        if Summary.Ref.(N.Map.mem string_mk !entries || not (N.Map.mem string_of_list !entries))
+        then string_mk
+        else string_of_list
+      in
+      instantiate string_of_chars [] >>= fun string_mk ->
       get_uconv >>= fun uconv ->
       let list, char =
         with_env_evm env uconv
@@ -1351,7 +1368,7 @@ and to_constr_node =
             EConstr.to_constr evd mkChar)
           ()
       in
-      ret (mk_string char string list UVars.Instance.empty mkChar s)
+      ret (mk_string char string_mk list UVars.Instance.empty mkChar s)
 
 and instantiate n univs uconv =
   assert (List.length univs < Sys.int_size);
@@ -1397,7 +1414,7 @@ and ensure_exists n i =
 and declare_def { name = n; ty; body; univs; hint; kernel_opaque } i =
   let ref, algs =
     match get_predeclared_def_some n i with
-    | Some ((UInt32_size | Nat_isValidChar), _, (def_name, c)) ->
+    | Some (_, _, (def_name, c)) ->
       (* Hack to let the user predeclare some constants
          TODO make a more general Register-like API? *)
       Feedback.msg_info Pp.(Id.print def_name ++ str " is predeclared");
@@ -1530,7 +1547,7 @@ and declare_ind { name = n; params; ty; ctors; univs } i =
       in
       (mind, [], ind_name, [ cname ], univs, squashy)
     | Some
-        ( ((Nat | Nat_le | Or | And | Fin | UInt32 | Char) as k),
+        ( ((Nat | Nat_le | Or | And | Fin | UInt32 | BitVec | Char) as k),
           _,
           (ind_name, mind) ) ->
       (* Hack to let the user predeclare various types before running Lean Import
