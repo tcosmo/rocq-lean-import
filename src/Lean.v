@@ -88,7 +88,15 @@ Module Quot.
 
 End Quot.
 
-Inductive Nat := Nat_zero : Nat | Nat_succ : Nat -> Nat.
+(* Lean's [Sort (n+1)] is imported as [Type@{Set+n+1}], one level above Rocq's
+   usual reading, and the importer stands [Set+1] by a global level. [Nat] is
+   declared at that level rather than lowered to [Set], so that it inhabits
+   the same universe as every imported [Type] and an importer of Lean terms
+   needs no cumulativity to use it. The importer adopts this universe as its
+   [Set+1] (see [level_of_sets]). *)
+Monomorphic Universe lean_set1.
+Monomorphic Constraint Set < lean_set1.
+Inductive Nat : Type@{lean_set1} := Nat_zero : Nat | Nat_succ : Nat -> Nat.
 
 Register Nat as lean.Nat.
 

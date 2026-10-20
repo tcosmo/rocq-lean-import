@@ -372,6 +372,16 @@ let is_sets u =
   | [ (u, n) ] -> if Level.is_set u then Some n else None
   | _ -> None
 
+(** The universe [Lean.v] declares the predeclared [Nat] in, which stands
+    for [Set+1]: [Nat] then lives where every imported [Type] does. *)
+let predeclared_set1 () =
+  match Rocqlib.lib_ref_opt "lean.Nat" with
+  | Some (GlobRef.IndRef ind) ->
+    let _, mip = Global.lookup_inductive ind in
+    Universe.level (Sorts.univ_of_sort mip.Declarations.mind_sort)
+    |> Option.filter (fun l -> not (Level.is_set l))
+  | _ -> None
+
 (** Find or add a global level for Set+n *)
 let rec level_of_sets uconv n =
   let open Summary.Ref in
@@ -379,6 +389,15 @@ let rec level_of_sets uconv n =
   else
     try (uconv, Int.Map.find n !sets)
     with Not_found ->
+      match (if n = 1 then predeclared_set1 () else None) with
+      | Some l ->
+        sets := Int.Map.add n l !sets;
+        let graph =
+          if UGraph.check_constraint uconv.graph (Level.set, Lt, l) then uconv.graph
+          else add_universe l ~lbound:Level.set uconv.graph
+        in
+        ({ uconv with graph }, l)
+      | None ->
       let uconv, p = level_of_sets uconv (n - 1) in
       let l =
         if lean_fancy_univs () then level_of_universe_core [ (Level.set, n) ]
