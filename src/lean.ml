@@ -1128,6 +1128,27 @@ let mk_string char string_of_chars list char_uinst mkChar s =
   Constr.mkApp (string_of_chars, [| ls |])
 
 (* [c] has type [indu] applied to [args] *)
+(** Lean only projects proofs out of a proposition, and only those no data
+    field before them is needed to state. *)
+let check_prop_projection ~field ~mib ~mip =
+  if Sorts.relevance_equal mip.Declarations.mind_relevance Sorts.Irrelevant then begin
+    let ctx, _ = mip.Declarations.mind_nf_lc.(0) in
+    let nparams = Context.Rel.length mib.Declarations.mind_params_ctxt in
+    let fields = Array.of_list (List.rev (CList.firstn (Context.Rel.length ctx - nparams) ctx)) in
+    let relevant d = Sorts.relevance_equal (Context.Rel.Declaration.get_relevance d) Sorts.Relevant in
+    if field >= Array.length fields then
+      CErrors.user_err Pp.(str "Projection index out of range.");
+    if relevant fields.(field) then
+      CErrors.user_err Pp.(str "Data projection from a proposition.");
+    Array.iteri (fun j d ->
+        if j < field && relevant d then
+          for l = j + 1 to Array.length fields - 1 do
+            if not (Vars.noccurn (l - j) (Context.Rel.Declaration.get_type fields.(l))) then
+              CErrors.user_err Pp.(str "Proof projection follows a dependent data field.")
+          done)
+      fields
+  end
+
 let unfold_proj_case env evd ~field ~indu ~mib ~mip ~args c =
   let ind = fst indu in
   let npar = mib.Declarations.mind_nparams in
@@ -1285,6 +1306,7 @@ and to_constr_node =
                 Constr.destInd (EConstr.Unsafe.to_constr tc_head)
               in
               let mib, mip = Inductive.lookup_mind_specif (Global.env()) ind in
+              check_prop_projection ~field ~mib ~mip;
               begin
                 match mip.mind_record with
                 | PrimRecord infos ->
